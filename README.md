@@ -141,6 +141,13 @@ modified-section re-encoding, complete package construction, recovery,
 real-device execution, timing, audibility and safety remain independent and
 unproved gates.
 
+## License
+
+To the extent the contributors own the necessary rights, the original contents
+of this repository are dedicated to the public domain under
+[CC0 1.0 Universal](LICENSE). This does not grant rights in Elektron firmware,
+vendor code, third-party works, patents, product names, or trademarks.
+
 Digitakt, Digitakt II, Overbridge and Elektron are trademarks of their
 respective owners. This project is independent and is not affiliated with or
 endorsed by Elektron.
