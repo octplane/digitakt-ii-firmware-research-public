@@ -113,16 +113,16 @@ too: this dossier begins after MAIN already has control.
 `0x400CC864` plausibly distinguishes boot modes, but no controlled pair
 establishes its meaning.
 
-## The boot animation is a weighted random selector
+## The boot animation selector: five variants, but a deterministic choice
 
-`STATIC-AUTH.` The startup animation is not fixed. A selector draws from a
+`STATIC-AUTH.` The startup animation is chosen at runtime. A selector reads a
 15-bit linear congruential generator and walks a cascade of four comparisons,
 choosing one of **five** draw routines held in a table of
 `(parameter, function, threshold, flags)` records.
 
-With the stock thresholds the distribution is approximately:
+The stock thresholds give these **nominal weights**:
 
-| Variant | Share |
+| Variant | Nominal weight |
 |---|---|
 | common | 99.902% |
 | rare A | 0.049% |
@@ -130,8 +130,26 @@ With the stock thresholds the distribution is approximately:
 | rare C | rarer |
 | rare D | rarest |
 
-The common variant draws a 32-pixel-wide logo bitmap at a fixed position on the
-128x64 display. Its constructor arguments and its rendered extent disagree
+**These are weights, not observed frequencies.** `STATIC-AUTH`: the generator's
+state word is referenced from exactly one site in the whole image, inside the
+generator itself. There is no seeding function and no other writer, so the draw
+sequence is identical on every boot and the selector resolves to the **same
+variant every time**. The weights describe what the cascade would do given a
+uniform draw; the draw is not uniform across boots, it is fixed.
+
+`HARDWARE, owner-reported.` An instrument running a build with these thresholds
+re-weighted toward uniformity showed a single variant across 4-5 restarts, and
+a different one from stock. That is the predicted consequence of re-weighting a
+deterministic draw: the bucket boundaries move, so the same fixed value lands
+elsewhere. Under a genuinely uniform draw, five identical boots would be roughly
+a 0.2% event.
+
+Consequently the four low-weight variants are best described as **unreachable
+in practice on a given unit**, rather than as rare events. Reweighting alone
+does not make them appear; changing which variant is selected does.
+
+The selected variant draws a 32-pixel-wide logo bitmap at a fixed position on
+the 128x64 display. Its constructor arguments and its rendered extent disagree
 about the bitmap's height, so the exact dimensions are not asserted here. The
 rarest variant is a distinct dither path with its own source artwork and its
 own translation unit, identified by a retained source-path string. The four
@@ -211,6 +229,13 @@ here, and none is required to read this document.
 - Whether the 1.15C container also enumerates sections 2, 5 and 8, which would
   make the census difference a reporting artefact rather than a version change.
 - The meaning of the boot-mode bit tested at `0x400CC864`.
+- Whether the generator is advanced a fixed number of times before the selector
+  on every boot, or merely appears so. From a cleared BSS its first draw is `0`,
+  which selects the common variant, so the observed non-common selection implies
+  prior calls; there are eight call sites.
+- Where the DMA timer whose 32-bit counter MAIN reads at `0xFC07000C` is
+  actually enabled. No section writes its control registers, yet MAIN reads the
+  counter from several sites including early boot.
 - Section 8's role. It carries no ColdFire idioms and almost no image data.
 - The bitmap constructor's exact signature. Its pushed dimension arguments do
   not agree with the rendered extent of at least one asset, so either the
