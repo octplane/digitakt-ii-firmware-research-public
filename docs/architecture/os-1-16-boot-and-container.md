@@ -148,6 +148,22 @@ Consequently the four low-weight variants are best described as **unreachable
 in practice on a given unit**, rather than as rare events. Reweighting alone
 does not make them appear; changing which variant is selected does.
 
+`HARDWARE, owner-reported.` A third build confirms this by changing the
+mechanism rather than the weights. Replacing the generator's constant additive
+term with a read of a free-running 32-bit hardware counter, in the same six
+bytes, makes the intro vary between restarts. Three builds each discriminate:
+
+| Build | Predicted | Observed |
+|---|---|---|
+| stock | one fixed variant | matches |
+| thresholds re-weighted | one fixed variant, different from stock | matches |
+| thresholds + live counter mixed into the generator | varies per boot | matches |
+
+Had the generator been seeded all along, the first two would have varied; had
+the counter been inactive, the third would not have. This is therefore a
+confirmed diagnosis rather than a consistent one, and it is the evidence for
+the unseeded-generator claim above.
+
 The selected variant draws a 32-pixel-wide logo bitmap at a fixed position on
 the 128x64 display. Its constructor arguments and its rendered extent disagree
 about the bitmap's height, so the exact dimensions are not asserted here. The
@@ -234,8 +250,11 @@ here, and none is required to read this document.
   which selects the common variant, so the observed non-common selection implies
   prior calls; there are eight call sites.
 - Where the DMA timer whose 32-bit counter MAIN reads at `0xFC07000C` is
-  actually enabled. No section writes its control registers, yet MAIN reads the
-  counter from several sites including early boot.
+  enabled. The hardware result above shows it *is* running and free-running,
+  since mixing it into the generator visibly randomises the boot intro. But no
+  section writes its control registers, so it is configured either outside these
+  three images or through an address this analysis could not resolve
+  statically. Whether it runs is answered; where it is started is not.
 - Section 8's role. It carries no ColdFire idioms and almost no image data.
 - The bitmap constructor's exact signature. Its pushed dimension arguments do
   not agree with the rendered extent of at least one asset, so either the
