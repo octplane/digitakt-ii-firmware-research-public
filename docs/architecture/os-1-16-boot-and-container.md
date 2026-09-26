@@ -1,4 +1,4 @@
-# OS 1.16: container census, bootstrap domain, and the MAIN boot chain
+# OS 1.16: container census, boot chain, co-processors, and the control surface
 
 ## Scope and evidence boundary
 
@@ -43,7 +43,7 @@ Sizes are decompressed unless marked raw.
 | 3 | ColdFire MAIN | 3,275,616 B | `0x40000400` |
 | 4 | ColdFire updater | 32,776 B (raw) | `0x80000400` |
 | 7 | SHARC loader/application | 321,016 B | — |
-| 8 | unidentified | 159,948 B | — |
+| 8 | Cortex-M co-processor: USB, USB-PD, MIDI | 159,948 B | `0x60040000` |
 
 Comparing with the 1.15C table already published here: MAIN grows from
 3,177,312 to 3,275,616 bytes, the updater stays at 32,776, and SHARC
@@ -88,6 +88,130 @@ recorded so others can skip it.
 1 KiB-block image test across the whole section returned no 128x64 candidate.
 The diagnostic screen is composed from a 6-pixel proportional font whose width
 table is byte-identical to one carried in MAIN.
+
+## Section 8 is a Cortex-M USB and MIDI co-processor
+
+`STATIC-AUTH.` Section 8 carries no ColdFire idioms because it is not ColdFire
+code. It is Thumb-2 for a Cortex-M core, linked for execution in place at
+`0x60040000`, with a Cortex-M vector table at `0x60042000`: the first longword
+is a stack pointer into a RAM region and every following entry is an odd
+address inside the image, which is the Thumb bit.
+
+Its reset handler ends in the usual two-table C runtime startup, and the copy
+table at `0x60042180` is what makes the rest of the section readable:
+
+| Source | Destination | Length |
+|---|---|---|
+| `0x600667E8` | `0x20000000` | 2,276 B |
+| `0x6005EEB0` | `0x00000000` | 31,032 B |
+
+The second descriptor moves 31,032 bytes to address zero before the application
+starts. Several vector-table handlers and the most-called routines in the image
+point into that range, so a straight load of the section leaves them dangling
+and the section looks like it is missing code. Mapping the block as a second
+segment at `0x00000000`, populated from the same bytes, resolves them:
+recovered functions rise from 689 to 911 and decoded instructions from 37,322
+to 45,730. Source and destination bytes are identical, so the affected routines
+appear twice, once at each address.
+
+`STATIC-AUTH.` The image is a FreeRTOS build. Its task table names a timer
+service task alongside tasks for USB host, USB device, USB Power Delivery and
+MIDI, and its error strings cover flash writes, configuration validation and
+firmware-upgrade sequencing. Peripheral usage is consistent: an ADC, two
+quad-timer modules, FlexIO, GPIO and four low-power UARTs, identified from
+documented register offsets rather than by assuming a memory map.
+
+`INFERENCE.` The reset path configures FlexRAM through an IOMUXC general
+purpose register and the part executes in place from `0x60000000`, which is the
+i.MX RT family arrangement. The specific part is not established here.
+
+`NEGATIVE-BOUNDED.` Section 8 is not the control-surface processor described
+below. Scanning the whole image for Thumb compare-immediate against the panel
+link's command bytes returns none, against 2,319 compare-immediate sites in
+total. A dispatch built on a jump table rather than on comparisons would evade
+this test.
+
+## The control surface is a separate processor behind a serial link
+
+`STATIC-AUTH.` The keys, encoders, LEDs and the display are not memory-mapped
+on the ColdFire. They belong to a second processor reached over a ColdFire UART
+at `0xEC070000`, in the standard register layout: status at `+0x04` with TxRDY
+at bit 2 and RxRDY at bit 0, data at `+0x0C`.
+
+The bootstrap polls that UART directly. MAIN drives it with two eDMA channels
+whose transfer control descriptors, at `0xFC045440` and `0xFC045470`, both
+address `0xEC07000C`, with a `0x6000`-byte receive ring. The initialiser
+requests 156,250 baud from a 132 MHz reference through a divide-by-32
+prescaler; the integer divider truncates to 26, so the line runs at roughly
+158.7 kbaud.
+
+The link is byte-tagged in both directions. Command bytes, as routing evidence,
+recovered from the bootstrap and from MAIN:
+
+| Host to panel | Meaning |
+|---|---|
+| `B5 slot r g b` | define a palette entry, six-bit components |
+| `B9 index colour` | set one LED to a palette slot |
+| `B8` | latch the frame |
+| `B7 ff` | global LED brightness |
+| `1n column b0..b7` | display column write, eight bytes per column |
+| `60 mode` | key-scan mode |
+| `70` or `71`, `00` | query the panel firmware revision |
+
+| Panel to host | Meaning |
+|---|---|
+| `2n mask` | key row state, eight keys per row |
+| `3n delta` | encoder movement |
+| `7n` and four bytes | firmware revision reply |
+
+One bootstrap command, `BA` with a single argument, is not identified.
+
+This explains a structural point that is otherwise puzzling: the display and
+the LEDs share one transport, which is why the boot-animation engine obtains
+its frame buffer from the same module that owns the LEDs.
+
+### The LED model in MAIN
+
+`STATIC-AUTH.` MAIN addresses 50 LED slots. For each slot it keeps a shadow of
+the current palette index, an alternate palette index, a flag selecting between
+them, a bit in a dirty bitmap, and a countdown. A tick routine decrements every
+countdown and, on expiry, clears the alternate flag and marks the slot dirty.
+"Show this colour for N ticks, then revert" is therefore a property of the
+driver rather than a timer kept by each caller.
+
+Palette entries 2 through `0x87` are loaded from a table of **134 colours in
+three intensity variants**, stride 402 bytes, which is the LED INTENSITY
+setting. Entry 1 is the white used by the separate LED BACKLIGHT setting, taken
+from a twelve-entry table.
+
+The display is double buffered. One routine pushes all 128 columns; another
+pushes only the columns that differ between the two buffers. Both end with the
+latch command and swap.
+
+### The power-on LED sweep is not in this container
+
+`NEGATIVE-BOUNDED.` The key-lighting sweep seen at power-on was not found in
+any ColdFire image in this container. The search boundary was the complete
+call graph of the LED interface: the single-LED setter, the timed-LED setter,
+the palette setter, the row flush and the tick routine, together with the 315
+call sites of MAIN's high-level set-LED entry point. Those call sites occur
+seven to twelve at a time inside per-view handlers. No sweep, no phase table
+and no delay-driven loop over LED indices appears among them. In the bootstrap
+the entire LED traffic is four palette definitions and five fixed slots lit for
+the STARTUP MENU.
+
+`STATIC-AUTH.` The panel runs its own versioned firmware: the bootstrap reads a
+revision over the link, prints it on the diagnostic boot screen, and gates on a
+minimum minor revision. The 1.16 section table enumerates ids 5, 2, 3, 4, 7 and
+8, none of which is a panel image, and neither the bootstrap nor MAIN transfers
+code over the link.
+
+`INFERENCE.` The sweep is therefore produced by the panel processor, from
+firmware distributed by some other route. Consistent with that, MAIN's first
+LED traffic once the link is up is an announce byte, a key-scan mode command
+and global brightness set to full, which is the shape of taking over a surface
+that is already lit rather than starting one from dark. This is not proved. A
+capture of the link at power-on would settle it, and none was taken.
 
 ## ColdFire MAIN: reset to first task
 
@@ -255,7 +379,11 @@ here, and none is required to read this document.
   section writes its control registers, so it is configured either outside these
   three images or through an address this analysis could not resolve
   statically. Whether it runs is answered; where it is started is not.
-- Section 8's role. It carries no ColdFire idioms and almost no image data.
+- The meaning of the bootstrap's `BA` panel command.
+- By what route panel firmware is distributed, since no section here carries it.
+- Everything about the panel link below the byte layer: no electrical or
+  timing capture was taken, so the power-on ownership of the LEDs is inferred
+  from the firmware's own first traffic rather than observed.
 - The bitmap constructor's exact signature. Its pushed dimension arguments do
   not agree with the rendered extent of at least one asset, so either the
   argument order or an implicit padding rule is still misread.
